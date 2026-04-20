@@ -10,6 +10,13 @@ st.set_page_config(page_title="Lyric Generator", page_icon="🎵")
 st.title("Lyric Generator")
 st.caption("YouTube link → transcript → new lyrics in that style")
 
+
+def safe_err(e: Exception, secret: str) -> str:
+    msg = str(e)
+    if secret:
+        msg = msg.replace(secret, "[REDACTED]")
+    return msg
+
 with st.sidebar:
     api_key = st.text_input(
         "OpenAI API key",
@@ -17,6 +24,10 @@ with st.sidebar:
         help="Bring your own key. Stored only in this session.",
     )
     st.markdown("[Get a key](https://platform.openai.com/api-keys)")
+    st.caption(
+        "🔒 Key held in session memory only. Sent over HTTPS to OpenAI. "
+        "Never stored to disk, never logged. Cleared on tab close."
+    )
 
 url = st.text_input("YouTube URL", placeholder="https://youtube.com/watch?v=...")
 
@@ -78,7 +89,7 @@ if transcribe_btn:
         st.session_state["title"] = title
         st.success(f"Done: {title}")
     except Exception as e:
-        st.error(f"Failed: {e}")
+        st.error(f"Failed: {safe_err(e, api_key)}")
 
 if "transcript" in st.session_state:
     st.subheader(f"Transcript — {st.session_state.get('title', '')}")
@@ -99,7 +110,7 @@ if "transcript" in st.session_state:
                 lyrics = generate_lyrics(client, st.session_state["transcript"], style_hint)
             st.session_state["lyrics"] = lyrics
         except Exception as e:
-            st.error(f"Failed: {e}")
+            st.error(f"Failed: {safe_err(e, api_key)}")
 
 if "lyrics" in st.session_state:
     st.text_area("Generated lyrics", st.session_state["lyrics"], height=300)
