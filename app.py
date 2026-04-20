@@ -29,10 +29,14 @@ with st.sidebar:
         "Never stored to disk, never logged. Cleared on tab close."
     )
 
-url = st.text_input("YouTube URL", placeholder="https://youtube.com/watch?v=...")
-
-col1, col2 = st.columns(2)
-transcribe_btn = col1.button("Transcribe", type="primary", disabled=not (url and api_key))
+tab_url, tab_upload = st.tabs(["YouTube URL", "Upload audio file"])
+with tab_url:
+    url = st.text_input("YouTube URL", placeholder="https://youtube.com/watch?v=...")
+    st.caption("⚠️ YouTube often blocks cloud servers. If it fails, use the Upload tab.")
+    transcribe_btn = st.button("Transcribe URL", type="primary", disabled=not (url and api_key))
+with tab_upload:
+    uploaded = st.file_uploader("Audio file (mp3/m4a/wav, ≤25 MB)", type=["mp3", "m4a", "wav", "mp4"])
+    upload_btn = st.button("Transcribe file", type="primary", disabled=not (uploaded and api_key))
 
 
 def download_audio(url: str, out_dir: Path) -> Path:
@@ -46,6 +50,8 @@ def download_audio(url: str, out_dir: Path) -> Path:
         }],
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -88,6 +94,21 @@ if transcribe_btn:
         st.session_state["transcript"] = text
         st.session_state["title"] = title
         st.success(f"Done: {title}")
+    except Exception as e:
+        st.error(f"Failed: {safe_err(e, api_key)}")
+
+if upload_btn:
+    try:
+        client = OpenAI(api_key=api_key)
+        with st.status("Transcribing uploaded file...", expanded=False):
+            with tempfile.TemporaryDirectory() as tmp:
+                ext = Path(uploaded.name).suffix or ".mp3"
+                path = Path(tmp) / f"upload{ext}"
+                path.write_bytes(uploaded.getvalue())
+                text = transcribe(client, path)
+        st.session_state["transcript"] = text
+        st.session_state["title"] = uploaded.name
+        st.success(f"Done: {uploaded.name}")
     except Exception as e:
         st.error(f"Failed: {safe_err(e, api_key)}")
 
