@@ -1,0 +1,110 @@
+import tempfile
+from pathlib import Path
+
+import streamlit as st
+import yt_dlp
+from openai import OpenAI
+
+
+st.set_page_config(page_title="Lyric Generator", page_icon="🎵")
+st.title("Lyric Generator")
+st.caption("YouTube link → transcript → new lyrics in that style")
+
+with st.sidebar:
+    api_key = st.text_input(
+        "OpenAI API key",
+        type="password",
+        help="Bring your own key. Stored only in this session.",
+    )
+    st.markdown("[Get a key](https://platform.openai.com/api-keys)")
+
+url = st.text_input("YouTube URL", placeholder="https://youtube.com/watch?v=...")
+
+col1, col2 = st.columns(2)
+transcribe_btn = col1.button("Transcribe", type="primary", disabled=not (url and api_key))
+
+
+def download_audio(url: str, out_dir: Path) -> Path:
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+        "quiet": True,
+        "no_warnings": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        return out_dir / f"{info['id']}.mp3", info.get("title", "untitled")
+
+
+def transcribe(client: OpenAI, mp3_path: Path) -> str:
+    with open(mp3_path, "rb") as f:
+        resp = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe",
+            file=f,
+        )
+    return resp.text
+
+
+def generate_lyrics(client: OpenAI, transcript: str, style_hint: str) -> str:
+    prompt = (
+        "You are a songwriter. Below is a transcript of a song. "
+        "Write ORIGINAL new lyrics inspired by its style, mood, rhyme scheme, "
+        "and themes. Do not reproduce the original lyrics.\n\n"
+        f"Extra direction from user: {style_hint or '(none)'}\n\n"
+        f"Original transcript:\n{transcript}\n\n"
+        "New original lyrics:"
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.choices[0].message.content
+
+
+if transcribe_btn:
+    try:
+        client = OpenAI(api_key=api_key)
+        with st.status("Downloading audio...", expanded=False) as status:
+            with tempfile.TemporaryDirectory() as tmp:
+                mp3, title = download_audio(url, Path(tmp))
+                status.update(label="Transcribing...")
+                text = transcribe(client, mp3)
+        st.session_state["transcript"] = text
+        st.session_state["title"] = title
+        st.success(f"Done: {title}")
+    except Exception as e:
+        st.error(f"Failed: {e}")
+
+if "transcript" in st.session_state:
+    st.subheader(f"Transcript — {st.session_state.get('title', '')}")
+    st.text_area("transcript", st.session_state["transcript"], height=200, label_visibility="collapsed")
+    st.download_button(
+        "Download .txt",
+        st.session_state["transcript"],
+        file_name="transcript.txt",
+    )
+
+    st.divider()
+    st.subheader("Generate new lyrics in this style")
+    style_hint = st.text_input("Optional direction", placeholder="e.g. sadder, about space, shorter")
+    if st.button("Generate lyrics", disabled=not api_key):
+        try:
+            client = OpenAI(api_key=api_key)
+            with st.spinner("Writing..."):
+                lyrics = generate_lyrics(client, st.session_state["transcript"], style_hint)
+            st.session_state["lyrics"] = lyrics
+        except Exception as e:
+            st.error(f"Failed: {e}")
+
+if "lyrics" in st.session_state:
+    st.text_area("Generated lyrics", st.session_state["lyrics"], height=300)
+    st.download_button(
+        "Download lyrics .txt",
+        st.session_state["lyrics"],
+        file_name="new_lyrics.txt",
+    )
