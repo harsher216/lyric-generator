@@ -1,9 +1,34 @@
+import re
 import tempfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
 import yt_dlp
 from openai import OpenAI
+from youtube_transcript_api import YouTubeTranscriptApi
+
+
+def extract_video_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.hostname in ("youtu.be",):
+        return parsed.path.lstrip("/")
+    if parsed.hostname and "youtube.com" in parsed.hostname:
+        qs = parse_qs(parsed.query)
+        if "v" in qs:
+            return qs["v"][0]
+        m = re.match(r"/(shorts|embed)/([\w-]+)", parsed.path)
+        if m:
+            return m.group(2)
+    return None
+
+
+def fetch_captions(video_id: str) -> str | None:
+    try:
+        items = YouTubeTranscriptApi.get_transcript(video_id)
+        return " ".join(i["text"] for i in items if i["text"].strip())
+    except Exception:
+        return None
 
 
 st.set_page_config(page_title="Lyric Generator", page_icon="🎵")
@@ -32,7 +57,7 @@ with st.sidebar:
 tab_url, tab_upload = st.tabs(["YouTube URL", "Upload audio file"])
 with tab_url:
     url = st.text_input("YouTube URL", placeholder="https://youtube.com/watch?v=...")
-    st.caption("⚠️ YouTube often blocks cloud servers. If it fails, use the Upload tab.")
+    st.caption("Uses YouTube captions when available (fast). Falls back to audio download + Whisper if no captions — that path may fail on cloud due to YouTube bot blocks; use Upload tab then.")
     transcribe_btn = st.button("Transcribe URL", type="primary", disabled=not (url and api_key))
 with tab_upload:
     uploaded = st.file_uploader("Audio file (mp3/m4a/wav, ≤25 MB)", type=["mp3", "m4a", "wav", "mp4"])
@@ -86,11 +111,20 @@ def generate_lyrics(client: OpenAI, transcript: str, style_hint: str) -> str:
 if transcribe_btn:
     try:
         client = OpenAI(api_key=api_key)
-        with st.status("Downloading audio...", expanded=False) as status:
-            with tempfile.TemporaryDirectory() as tmp:
-                mp3, title = download_audio(url, Path(tmp))
-                status.update(label="Transcribing...")
-                text = transcribe(client, mp3)
+        vid = extract_video_id(url)
+        text = None
+        title = "video"
+        with st.status("Trying YouTube captions...", expanded=False) as status:
+            if vid:
+                text = fetch_captions(vid)
+            if text:
+                status.update(label="Got captions ✓", state="complete")
+            else:
+                status.update(label="No captions — downloading audio...")
+                with tempfile.TemporaryDirectory() as tmp:
+                    mp3, title = download_audio(url, Path(tmp))
+                    status.update(label="Transcribing with Whisper...")
+                    text = transcribe(client, mp3)
         st.session_state["transcript"] = text
         st.session_state["title"] = title
         st.success(f"Done: {title}")
